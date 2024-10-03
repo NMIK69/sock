@@ -1,0 +1,6 @@
+*.swp
+*.vim
+*.o
+server
+client
+main

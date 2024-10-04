@@ -46,6 +46,9 @@
 #endif //DEBUG_TRACE_TO_STDERR
 
 
+#define ARR_SIZE(arr)\
+	(sizeof(arr) / sizeof(*arr))
+
 #define UNUSED_VAR(var)\
 	(void)(var)
 
@@ -73,17 +76,19 @@ struct server_tcpip
 	/* man ip(7) */
 	struct sockaddr_in addr;
 	int fd;
+	int listener_pid;
+	struct sigaction old_sa;
 };
 
 static struct server_tcpip *server_tcpip_create(short port, 
 						const char *ip,
 						int backlog);
-static int server_tcpip_shutdown(int pid, struct server_tcpip *server);
+static int server_tcpip_shutdown(struct server_tcpip *server);
 static struct server_tcpip *server_tcpip_init(short port,
 						const char *ip);
 static void server_tcpip_free(struct server_tcpip *server);
 
-static void print_server_tcpip_info(struct server_tcpip *server);
+static void print_server_tcpip_info(const struct server_tcpip *server);
 
 static int server_tcpip_start(struct server_tcpip *server);
 static void process_listen_inf(struct server_tcpip *server);
@@ -94,13 +99,12 @@ static void process_handle_connection(int peer_fd, struct sockaddr_in addr);
 static int listener_is_running;
 static int handler_is_running;
 
-static struct sigaction server_old_sa;
 
 static void handle_connection_stop(int s)
 {
 	UNUSED_VAR(s);
 
-	printf("[*] Closing connection (server command)\n");
+	printf("[*] Closing connection (listener command)\n");
 
 	handler_is_running = 0;
 }
@@ -132,27 +136,30 @@ static void server_sigchld_handler(int s)
 
 int main(void)
 {
-	struct server_tcpip *server = server_tcpip_create(PORT_NUM,
-							"127.0.0.1",
-							10);
+	int err;
+	struct server_tcpip *server;
+
+	server = server_tcpip_create(PORT_NUM,
+					"127.0.0.1",
+					10);
 	if(server == NULL)
 		return 0;
 
 	print_server_tcpip_info(server);
 
-	int pid = server_tcpip_start(server);
-	if(pid == -1)
+	err = server_tcpip_start(server);
+	if(err == -1)
 		return 0;
 
 	getchar();
 	
-	server_tcpip_shutdown(pid, server);
+	server_tcpip_shutdown(server);
 	
 	return 0;
 }
 
 
-static void print_server_tcpip_info(struct server_tcpip *server)
+static void print_server_tcpip_info(const struct server_tcpip *server)
 {
 	printf("[*] Server Info:\n"
 			"\tIP  : %s\n"
@@ -256,6 +263,8 @@ static void server_tcpip_free(struct server_tcpip *server)
 	free(server);
 }
 
+
+
 static void process_handle_connection(int peer_fd, struct sockaddr_in addr)
 {
 	struct sigaction sa;	
@@ -264,7 +273,6 @@ static void process_handle_connection(int peer_fd, struct sockaddr_in addr)
 	ssize_t nb_send;
 
 	char buf[500];
-	size_t len = 500;
 
 	printf("[*] Accepted connection from: %s\n",
 			inet_ntoa(addr.sin_addr));
@@ -284,7 +292,11 @@ static void process_handle_connection(int peer_fd, struct sockaddr_in addr)
 	handler_is_running = 1;
 	while(handler_is_running == 1) {
 
-		nb_recv = recv(peer_fd, buf, len, 0);
+		/*TODO: can i make this a callback from here on?.*/
+		/* Do i have to shoot data through a pipe back to the main
+		 * process ?*/
+
+		nb_recv = recv(peer_fd, buf, ARR_SIZE(buf), 0);
 		if(nb_recv == -1) {
 			if(errno == ERESTART || errno == EINTR)
 				break;
@@ -380,6 +392,7 @@ static void process_listen_inf(struct server_tcpip *server)
 		}
 	}
 
+	/* restore / remove signal handlers */	
 	err = sigaction(SIGUSR1, &old_sa, NULL);
 	if(err == -1) {
 		debug_trace_errno();
@@ -391,16 +404,21 @@ static void process_listen_inf(struct server_tcpip *server)
 		_exit(EXIT_FAILURE);
 	}
 
+	/* stop all connection handlers */
 	for(size_t i = 0; i < num_chlds; i++) {
 		err = kill(child_pids[i], SIGUSR1);
+		/* pid might already be dead. Check for ERSCH. */
 		if(err == -1) {
-			debug_trace_errno();
-			_exit(EXIT_FAILURE);
+			if(errno != ESRCH)
+				debug_trace_errno();
 		}
-		err = waitpid(child_pids[i], NULL, 0);
-		if(err == -1) {
-			debug_trace_errno();
-			_exit(EXIT_FAILURE);
+		else {
+			err = waitpid(child_pids[i], NULL, 0);
+			if(err == -1) {
+				debug_trace_errno();
+				/* TODO: do i _exit here ? */
+				_exit(EXIT_FAILURE);
+			}
 		}
 	}
 
@@ -421,10 +439,10 @@ static int server_tcpip_start(struct server_tcpip *server)
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESTART;
 
-	err = sigaction(SIGCHLD, &sa, &server_old_sa);
+	err = sigaction(SIGCHLD, &sa, &(server->old_sa));
 	if(err == -1) {
 		debug_trace_errno();
-		exit(EXIT_FAILURE);
+		return -1;
 	}
 
 	pid = fork();
@@ -438,28 +456,29 @@ static int server_tcpip_start(struct server_tcpip *server)
 		process_listen_inf(server);	
 	}
 
-	/* else return pid */
+	/* else pid is child (listener) pid */
+	server->listener_pid = pid;
 
-	return pid;
+	return 0;
 }
 
-static int server_tcpip_shutdown(int pid, struct server_tcpip *server)
+static int server_tcpip_shutdown(struct server_tcpip *server)
 {
 	int err;
-	err = sigaction(SIGCHLD, &server_old_sa, NULL);
-	if(err == -1) {
-		debug_trace_errno();
-		exit(EXIT_FAILURE);
-	}
-
-
-	err = kill(pid, SIGUSR1);
+	err = sigaction(SIGCHLD, &(server->old_sa), NULL);
 	if(err == -1) {
 		debug_trace_errno();
 		return -1;
 	}
-	waitpid(pid, NULL, 0);
+
+	err = kill(server->listener_pid, SIGUSR1);
+	if(err == -1) {
+		debug_trace_errno();
+		return -1;
+	}
+	waitpid(server->listener_pid, NULL, 0);
 
 	server_tcpip_free(server);
+
 	return 0;
 }

@@ -190,6 +190,10 @@ struct server_tcpip *server_tcpip_create(short port,
 
 	err = setsockopt(server->fd, SOL_SOCKET, SO_REUSEADDR, 
 						&optval, sizeof(optval));
+	if(err == -1) {
+		debug_trace_errno();
+		goto err_out;
+	}
 
 
 	err = bind(server->fd, (struct sockaddr *) &(server->addr),

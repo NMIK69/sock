@@ -4,7 +4,8 @@
 #include <string.h>
 #include <assert.h>
 
-#include "sockserv.h"
+#include "server_tcp.h"
+#include "server_udp.h"
 
 #define PORT_NUM 8000
 #define IP "127.0.0.1"
@@ -12,29 +13,61 @@
 static int echo_handler(const char *recv_buf, size_t recv_len,
 			char **send_buf, size_t *send_len);
 
+
+static void run_tcp(void);
+static void run_udp(void);
+
 int main(void)
 {
-	int err;
-	struct server_tcpip *server;
+	//run_tcp();
+	run_udp();
 
-	server = server_tcpip_create(PORT_NUM,
+	return 0;
+}
+
+static void run_tcp(void)
+{
+	int err;
+	struct server_tcp *server;
+
+	server = server_tcp_create(PORT_NUM,
 				     IP,
 				     10,
 				     echo_handler);
 	if(server == NULL)
-		return 0;
+		return;
 
-	print_server_tcpip_info(server);
+	print_server_tcp_info(server);
 
-	err = server_tcpip_start(server);
+	err = server_tcp_start(server);
 	if(err == -1)
-		return 0;
+		return;
 
 	getchar();
 	
-	server_tcpip_shutdown(server);
+	server_tcp_shutdown(server);
+}
+
+static void run_udp(void)
+{
+	int err;
+	struct server_udp *server;
+
+	server = server_udp_create(PORT_NUM,
+				     IP,
+				     echo_handler);
+	if(server == NULL)
+		return;
+
+	print_server_udp_info(server);
+
+	err = server_udp_start(server);
+	if(err == -1)
+		return;
+
+	getchar();
 	
-	return 0;
+	server_udp_shutdown(server);
 }
 
 static int echo_handler(const char *recv_buf, size_t recv_len,

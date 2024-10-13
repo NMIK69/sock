@@ -23,7 +23,7 @@ cli: $(CLIENT)
 $(CLIENT): client.c
 	$(CC) $(CFLAGS) $(OPTI) $^ -o $@
 
-$(SERVER): server.c sockserv.c
+$(SERVER): server.c server_tcp.c server_udp.c
 	$(CC) $(CFLAGS) $(OPTI) $^ -o $@
 
 

@@ -23,7 +23,7 @@
 // for killpg
 #include <signal.h>
 
-#include "sockserv.h"
+#include "server_tcp.h"
 
 
 #define DEBUG_TRACE_TO_STDERR
@@ -72,41 +72,46 @@
 - http://www.cs.columbia.edu/~danr/courses/6761/Fall00/hw/pa1/6761-sockhelp.pdf
 */
 
-struct server_tcpip
+
+/* TODO:
+	- [ ] Track pids (in listener) in a more robust way.
+*/
+
+struct server_tcp
 {
 	/* man ip(7) */
 	struct sockaddr_in addr;
 	int fd;
 	int listener_pid;
 	struct sigaction old_sa;
-	tcpip_cli_handler act;
+	cli_handler_tcp handler;
 };
 
 
-static struct server_tcpip *server_tcpip_init(short port,
+static struct server_tcp *server_tcp_init(short port,
 				const char *ip);
-static void server_tcpip_free(struct server_tcpip *server);
+static void server_tcp_free(struct server_tcp *server);
 
-static void process_listen_inf(struct server_tcpip *server);
+static void process_listen_inf(struct server_tcp *server);
 static void process_handle_connection(int peer_fd, struct sockaddr_in addr,
-					tcpip_cli_handler handler);
+					cli_handler_tcp handler);
 
 static void handle_connection_stop(int s);
 static void listener_stop(int s);
 static void listener_sigchld_handler(int s);
-static void server_sigchld_handler(int s);
+static void server_tcp_sigchld_handler(int s);
 
 /* only relevant in the forked process for running the server. */
 static int listener_is_running;
 static int handler_is_running;
 
-int server_tcpip_start(struct server_tcpip *server)
+int server_tcp_start(struct server_tcp *server)
 {
 	int pid;
 	int err;
 	struct sigaction sa;	
 
-	sa.sa_handler = server_sigchld_handler;
+	sa.sa_handler = server_tcp_sigchld_handler;
 	//sigfillset(&sa.sa_mask);
 	/* so that I don't miss/ignore sigchlds */
 	sigemptyset(&sa.sa_mask);
@@ -135,7 +140,7 @@ int server_tcpip_start(struct server_tcpip *server)
 	return 0;
 }
 
-int server_tcpip_shutdown(struct server_tcpip *server)
+int server_tcp_shutdown(struct server_tcp *server)
 {
 	int err;
 	err = sigaction(SIGCHLD, &(server->old_sa), NULL);
@@ -151,38 +156,37 @@ int server_tcpip_shutdown(struct server_tcpip *server)
 	}
 	waitpid(server->listener_pid, NULL, 0);
 
-	server_tcpip_free(server);
+	server_tcp_free(server);
 
 	return 0;
 }
 
-struct server_tcpip *server_tcpip_create(short port, 
+struct server_tcp *server_tcp_create(short port, 
 				const char *ip,
 				int backlog,
-				tcpip_cli_handler handler)
+				cli_handler_tcp handler)
 {
-	struct server_tcpip *server;
-	struct protoent *tcp_prot;
-	int optval = 1;
+	struct server_tcp *server;
+	struct protoent *prot;
 	int err;
+	int optval = 1;
 
-	server = server_tcpip_init(port, ip);
+	server = server_tcp_init(port, ip);
 	if(server == NULL) {
 		debug_trace();
 		goto err_out;
 	}
-
-	server->act = handler;
+	server->handler = handler;
 
 	/* man page says it can also be read from /etc/protocols */
 	/* and apperently you don't free the returned pointer. */
-	tcp_prot = getprotobyname("tcp");
-	if(tcp_prot == NULL) {
+	prot = getprotobyname("tcp");
+	if(prot == NULL) {
 		debug_trace_errno();
 		goto err_out;
 	}
 
-	server->fd = socket(AF_INET, SOCK_STREAM, tcp_prot->p_proto);
+	server->fd = socket(AF_INET, SOCK_STREAM, prot->p_proto);
 	if(server->fd == -1) {
 		debug_trace_errno();
 		goto err_out;
@@ -214,14 +218,15 @@ struct server_tcpip *server_tcpip_create(short port,
 
 err_out:
 	
-	server_tcpip_free(server);
+	server_tcp_free(server);
 	
 	return NULL;
 }
 
-void print_server_tcpip_info(const struct server_tcpip *server)
+void print_server_tcp_info(const struct server_tcp *server)
 {
 	printf("[*] Server Info:\n"
+			"\tTYPE: TCP\n"
 			"\tIP  : %s\n"
 			"\tPORT: %d\n",
 			inet_ntoa(server->addr.sin_addr),
@@ -254,7 +259,7 @@ static void listener_sigchld_handler(int s)
 	wait(NULL);
 }
 
-static void server_sigchld_handler(int s)
+static void server_tcp_sigchld_handler(int s)
 {
 	UNUSED_VAR(s);
 
@@ -263,12 +268,11 @@ static void server_sigchld_handler(int s)
 }
 
 
-static struct server_tcpip *server_tcpip_init(short port,
-						const char *ip)
+static struct server_tcp *server_tcp_init(short port, const char *ip)
 {
 	
 	int err;
-	struct server_tcpip *server;
+	struct server_tcp *server;
 
 	server = malloc(sizeof(*server));
 	if(server == NULL) {
@@ -292,7 +296,7 @@ static struct server_tcpip *server_tcpip_init(short port,
 }
 
 
-static void server_tcpip_free(struct server_tcpip *server)
+static void server_tcp_free(struct server_tcp *server)
 {
 	if(server == NULL)
 		return;
@@ -303,8 +307,8 @@ static void server_tcpip_free(struct server_tcpip *server)
 	free(server);
 }
 
-static void process_handle_connection(int peer_fd, struct sockaddr_in addr,
-					tcpip_cli_handler handler)
+static void process_handle_connection(int peer_fd, struct sockaddr_in client_addr,
+					cli_handler_tcp handler)
 {
 	struct sigaction sa;	
 	int err;
@@ -316,7 +320,7 @@ static void process_handle_connection(int peer_fd, struct sockaddr_in addr,
 	size_t send_buf_len = 0;
 
 	printf("[*] Accepted connection from: %s\n",
-			inet_ntoa(addr.sin_addr));
+			inet_ntoa(client_addr.sin_addr));
 
 	/* dont use restart */
 	/* Then i can use errno to check if it is "interrupted syscall" */
@@ -339,7 +343,9 @@ static void process_handle_connection(int peer_fd, struct sockaddr_in addr,
 			break;
 
 		if(nb_recv == -1) {
-			if(errno == ERESTART || errno == EINTR)
+			/* man 7 signal */
+			//if(errno == ERESTART || errno == EINTR)
+			if(errno == EINTR)
 				break;
 			else
 				debug_trace_errno();
@@ -354,7 +360,9 @@ static void process_handle_connection(int peer_fd, struct sockaddr_in addr,
 				break;
 
 			if(nb_send == -1) {
-				if(errno == ERESTART || errno == EINTR)
+				/* man 7 signal */
+				//if(errno == ERESTART || errno == EINTR)
+				if(errno == EINTR)
 					break;
 				else 
 					debug_trace_errno();
@@ -367,7 +375,7 @@ static void process_handle_connection(int peer_fd, struct sockaddr_in addr,
 	_exit(EXIT_SUCCESS);
 }
 
-static void process_listen_inf(struct server_tcpip *server)
+static void process_listen_inf(struct server_tcp *server)
 {
 	struct sigaction sa;	
 	struct sigaction old_sa;
@@ -409,7 +417,9 @@ static void process_listen_inf(struct server_tcpip *server)
 		if(peer_fd == -1) {
 			/* if it was interrupted by signal, then it should be by
 			 * sigusr1 */
-			if(errno == ERESTART || errno == EINTR)
+			/* man 7 signal */
+			//if(errno == ERESTART || errno == EINTR)
+			if(errno == EINTR)
 				break;
 
 
@@ -428,7 +438,7 @@ static void process_listen_inf(struct server_tcpip *server)
 			close(server->fd);
 			/* calls _exit() */
 			process_handle_connection(peer_fd, peer_addr,
-						server->act);
+						server->handler);
 		}
 		else {
 			/* I'm just accepting connections I don't care about
@@ -463,13 +473,12 @@ static void process_listen_inf(struct server_tcpip *server)
 			if(err == -1) {
 				debug_trace_errno();
 				/* TODO: do i _exit here ? */
-				_exit(EXIT_FAILURE);
 			}
 		}
 	}
 
-	printf("here\n");
+	printf("[*] All Connection shut down.\n");
+	printf("[*] Listener shut down.\n");
 
 	_exit(EXIT_SUCCESS);
 }
-

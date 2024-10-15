@@ -20,10 +20,10 @@ ser: $(SERVER)
 cli: $(CLIENT)
 
 
-$(CLIENT): client.c client_udp.c client_tcp.c
+$(CLIENT): client_test.c client_udp.c client_tcp.c
 	$(CC) $(CFLAGS) $(OPTI) $^ -o $@
 
-$(SERVER): server.c server_tcp.c server_udp.c
+$(SERVER): server_test.c server_tcp.c server_udp.c
 	$(CC) $(CFLAGS) $(OPTI) $^ -o $@
 
 

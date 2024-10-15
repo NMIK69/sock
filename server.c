@@ -7,8 +7,13 @@
 #include "server_tcp.h"
 #include "server_udp.h"
 
+#define UNUSED_VAR(var)\
+	(void)(var)
+
+
 #define PORT_NUM 8000
 #define IP "127.0.0.1"
+
 
 static int echo_handler(const char *recv_buf, size_t recv_len,
 			char **send_buf, size_t *send_len);
@@ -19,6 +24,9 @@ static void run_udp(void);
 
 int main(void)
 {
+	UNUSED_VAR(run_tcp);
+	UNUSED_VAR(run_udp);
+
 	//run_tcp();
 	run_udp();
 

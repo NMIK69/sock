@@ -20,7 +20,7 @@ ser: $(SERVER)
 cli: $(CLIENT)
 
 
-$(CLIENT): client.c
+$(CLIENT): client.c client_udp.c client_tcp.c
 	$(CC) $(CFLAGS) $(OPTI) $^ -o $@
 
 $(SERVER): server.c server_tcp.c server_udp.c
